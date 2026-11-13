@@ -70,10 +70,10 @@ flowchart TD
 
 ### Telemetry Lifecycle
 1. **Telemetry Generation:** `TruckSimulator` concurrently generates realistic GPS movements for 1,000 trucks using Java's `ExecutorService` and posts JSON to `/api/vehicles`.
-2. **Ingestion & Caching:** `VehicleController` receives updates, persists state to PostgreSQL, updates Redis cache (`vehicle:<truckId>`), and produces an event to Kafka's `vehicle-updates` topic.
-3. **Decoupled Analytics:** `VehicleAnalyticsConsumer` consumes the event asynchronously and delegates calculation to `AnomalyDetectionService`.
-4. **Deviation Analysis:** `AnomalyDetectionService` retrieves the truck's active route and waypoints, computes orthogonal distance to each segment, and if deviation exceeds threshold (>200m), creates an alert and broadcasts to `/topic/deviations`.
-5. **Live Dashboard Update:** Telemetry is broadcasted to `/topic/updates`, where the React + Leaflet frontend renders the truck marker and polyline history in real time.
+2. **Ingestion & Caching:** `VehicleController` acts as a fast ingestion gateway: persists state to PostgreSQL, updates the Redis cache (`vehicle:<truckId>`), and produces an event to Kafka's `vehicle-updates` topic.
+3. **Decoupled Analytics:** `VehicleAnalyticsConsumer` consumes the event asynchronously from Kafka and delegates calculation to `AnomalyDetectionService`.
+4. **Deviation Analysis & Debouncing:** `AnomalyDetectionService` retrieves the truck's active route corridor and waypoints, computes orthogonal distance to each segment, and if deviation exceeds threshold (>200m), creates or updates an active alert and broadcasts to `/topic/deviations`.
+5. **Live Dashboard Update:** Telemetry is broadcasted to `/topic/updates`, where the React + Leaflet frontend renders the truck marker, HUD metrics, and breadcrumb trails in real time.
 
 ---
 
@@ -117,12 +117,21 @@ flowchart TD
   * **Low:** $> 200\text{ m}$ deviation
   * **Medium:** $> 500\text{ m}$ deviation
   * **High:** $> 1,000\text{ m}$ deviation
-* **Alert Lifecycle:** Complete workflow to track alerts (`NEW` $\rightarrow$ `ACKNOWLEDGED` $\rightarrow$ `RESOLVED`).
+* **Alert Lifecycle & Debouncing:** Tracks alerts (`NEW` $\rightarrow$ `ACKNOWLEDGED` $\rightarrow$ `RESOLVED`) while updating active alerts in-place to avoid database flood during continuous off-route travel.
 
 ### 5. Automated Data Seeding
 * `DataInitializer` seeds 10 regional logistics hubs on first run:
   * Cape Town Central, Stellenbosch Depot, Paarl DC, George Logistics Hub, Bellville Depot, Durban North, Johannesburg Central, Pretoria Depot, Port Elizabeth Hub, and Bloemfontein.
 * Seeds 2 active multi-waypoint routes (`ROUTE-001` Cape Town to Stellenbosch, `ROUTE-002` Cape Town to Paarl) with expected arrival times.
+
+### 6. Interactive Operations HUD & Map Visualization
+* **Dynamic Marker Badges:** Renders vehicles using Leaflet `DivIcon` badges with truck IDs, directional icons, and dynamic color-coding (normal blue vs. severity red/orange/yellow with a CSS pulse animation when deviating).
+* **Planned Corridors & Logistics Hubs:** Draws active delivery routes as dashed emerald polylines and displays facility pins (`🏢` warehouses and `⛽` depots).
+* **Floating Operations HUD:**
+  * Real-time STOMP connection pill (`LIVE` / `OFFLINE`).
+  * Live metrics counters for active trucks, hubs, routes, and deviations.
+  * Layer toggles for hubs, corridors, and trails.
+  * Live anomaly alerts drawer with a 1-click **"Locate"** button that smoothly flies the map camera to the deviating vehicle.
 
 ---
 
@@ -166,6 +175,7 @@ flowchart TD
 
 ```
 Fleet_admin/
+├── .gitignore                      # Git ignore rules (node_modules, target, build)
 ├── docker-compose.yml              # PostgreSQL, PostGIS, Kafka, ZooKeeper, Redis
 ├── start-fleet.bat                 # One-click startup script (Docker + backend + frontend)
 ├── stop-fleet.bat                  # Service teardown script
@@ -192,6 +202,7 @@ Fleet_admin/
     └── src/
         ├── main.jsx                # Application root mounting
         ├── App.jsx                 # Main layout component
+        ├── App.css                 # Operations HUD & pulsing alert styles
         └── components/
             └── FleetMap.jsx        # Real-time Leaflet map with WebSocket listener
 ```

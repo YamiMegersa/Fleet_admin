@@ -120,29 +120,53 @@ public class AnomalyDetectionService {
     }
 
     /**
-     * Create and save a deviation alert
+     * Create or update an active deviation alert
      */
     private RouteDeviation createDeviationAlert(String truckId, Route route, 
                                                  double deviationDistance,
                                                  double currentLat, double currentLon) {
-        String deviationId = "DEV-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        // Check if there is already an active (unresolved) deviation for this truck on this route
+        List<RouteDeviation> existing = deviationRepository.findByTruckId(truckId);
+        RouteDeviation active = existing.stream()
+                .filter(d -> ("NEW".equals(d.getStatus()) || "ACKNOWLEDGED".equals(d.getStatus())) 
+                             && route.getRouteId().equals(d.getRouteId()))
+                .findFirst()
+                .orElse(null);
 
-        RouteDeviation deviation = new RouteDeviation(
-                deviationId,
-                route.getRouteId(),
-                truckId,
-                deviationDistance,
-                currentLat,
-                currentLon
-        );
+        RouteDeviation deviationToSave;
+        if (active != null) {
+            // Update existing active deviation rather than flooding DB with duplicate rows
+            active.setDeviationDistance(deviationDistance);
+            active.setCurrentLat(currentLat);
+            active.setCurrentLon(currentLon);
+            active.setDetectedAt(LocalDateTime.now());
+            if (deviationDistance > HIGH_THRESHOLD) {
+                active.setSeverity("HIGH");
+            } else if (deviationDistance > MEDIUM_THRESHOLD) {
+                active.setSeverity("MEDIUM");
+            } else {
+                active.setSeverity("LOW");
+            }
+            deviationToSave = active;
+        } else {
+            String deviationId = "DEV-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+            deviationToSave = new RouteDeviation(
+                    deviationId,
+                    route.getRouteId(),
+                    truckId,
+                    deviationDistance,
+                    currentLat,
+                    currentLon
+            );
+        }
 
         // Save to database
-        RouteDeviation saved = deviationRepository.save(deviation);
+        RouteDeviation saved = deviationRepository.save(deviationToSave);
 
         // Send real-time notification via WebSocket
         messagingTemplate.convertAndSend("/topic/deviations", saved);
 
-        System.out.println("⚠️ ROUTE DEVIATION DETECTED: " + truckId + " - " + deviationDistance + "m");
+        System.out.println("⚠️ ROUTE DEVIATION: " + truckId + " - " + String.format("%.1f", deviationDistance) + "m (" + saved.getSeverity() + ")");
 
         return saved;
     }
